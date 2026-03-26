@@ -29,6 +29,7 @@ description: >
 python scripts/bumble_client.py state    # returns JSON
 python scripts/bumble_client.py debug
 python scripts/bumble_client.py matches  # JSON: matches[{name, expired}], expired true/false/null, counts
+python scripts/bumble_client.py likes    # JSON: visible likes plus Beeline count/premium signal when available
 python scripts/bumble_client.py messages "Kritika"  # returns JSON with author field
 python scripts/bumble_client.py send "Kritika" "message text"
 python scripts/bumble_client.py photos "Kritika" "/absolute/output/dir"

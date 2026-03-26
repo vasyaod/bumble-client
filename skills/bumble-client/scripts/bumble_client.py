@@ -40,6 +40,7 @@ SESSION_ID = "bumble"
 BUMBLE_APP_URL = "https://bumble.com/app"
 BUMBLE_GET_STARTED = "https://bumble.com/get-started"
 BUMBLE_CONNECTIONS_URL = "https://bumble.com/app/connections"
+BUMBLE_BEELINE_URL = "https://bumble.com/app/beeline"
 SF_LAT = 37.78891962482936
 SF_LON = -122.41778467794562
 CONTINUE_METHODS_SELECTORS = [
@@ -58,6 +59,7 @@ CONTINUE_BUTTON_SELECTORS = [
 DEBUG_SCREENSHOT_PATH = Path(__file__).resolve().parent / "bumble_debug.jpg"
 COMMON_UI_TEXT = {
     "bumble",
+    "beeline",
     "continue",
     "change number",
     "quick sign in",
@@ -184,6 +186,8 @@ def get_state(content: Optional[dict[str, str]] = None) -> str:
         return "passkey_prompt"
     if "get-started" in url or "how do you want to get started" in text_content:
         return "logged_out"
+    if "/app/beeline" in url:
+        return "beeline"
     if "/app/connections" in url:
         return "connections"
     if "/app" in url and any(token in text_content for token in ("feedback", "edit profile", "filters", "match queue")):
@@ -223,6 +227,41 @@ def open_connections() -> Optional[dict[str, str]]:
     nav = navigate(SESSION_ID, BUMBLE_CONNECTIONS_URL, timeout=30)
     if nav.status_code != 200:
         print(f"Navigate to connections failed: {nav.status_code}")
+        return None
+    _pause()
+    return get_content()
+
+
+def open_beeline() -> Optional[dict[str, str]]:
+    """Navigate to Bumble Beeline / likes and return current content."""
+    if not resume_existing_session():
+        return None
+    content = get_content()
+    state = get_state(content)
+    if state == "passkey_prompt":
+        for _ in range(2):
+            if not skip_passkey_not_now():
+                break
+            _pause()
+            time.sleep(1.5)
+            content = get_content()
+            if get_state(content) != "passkey_prompt":
+                break
+        state = get_state(content)
+    if state in ("logged_out", "awaiting_sms_code", "captcha_challenge", "passkey_prompt"):
+        return content
+    url = (content or {}).get("url", "").lower()
+    if "/app/beeline" in url:
+        return content
+    if not url or url in ("about:blank", "data:,"):
+        nav = navigate(SESSION_ID, BUMBLE_APP_URL, timeout=30)
+        if nav.status_code != 200:
+            print(f"Navigate to app failed: {nav.status_code}")
+            return None
+        _pause()
+    nav = navigate(SESSION_ID, BUMBLE_BEELINE_URL, timeout=30)
+    if nav.status_code != 200:
+        print(f"Navigate to beeline failed: {nav.status_code}")
         return None
     _pause()
     return get_content()
@@ -320,6 +359,154 @@ def extract_matches_from_raw_text(raw_text: str) -> list[dict[str, Any]]:
 def extract_match_names_from_raw_text(raw_text: str) -> list[str]:
     """Names only (same order as extract_matches_from_raw_text)."""
     return [m["name"] for m in extract_matches_from_raw_text(raw_text)]
+
+
+def _beeline_segment_from_raw_text(raw_text: str) -> list[str]:
+    """Lines likely belonging to the Beeline / admirers view."""
+    lines = [_normalize_space(line) for line in raw_text.splitlines()]
+    lines = [line for line in lines if line]
+
+    marker_idx: Optional[int] = None
+    for i, line in enumerate(lines):
+        lower = line.lower()
+        if (
+            "liked you" in lower
+            or "likes you" in lower
+            or "admirers" in lower
+            or lower == "beeline"
+        ):
+            marker_idx = i
+            break
+    if marker_idx is None:
+        return []
+
+    stop_markers = {
+        "Conversations",
+        "Messages",
+        "Activate Spotlight",
+        "Bumble Premium is active",
+        "Edit profile",
+        "Settings",
+    }
+    segment: list[str] = []
+    for line in lines[marker_idx + 1 :]:
+        if any(line.startswith(marker) for marker in stop_markers):
+            break
+        segment.append(line)
+    return segment
+
+
+def extract_likes_from_raw_text(raw_text: str) -> list[dict[str, Any]]:
+    """Best-effort extraction of visible admirer names from Beeline text."""
+    segment = _beeline_segment_from_raw_text(raw_text)
+    if not segment:
+        return []
+
+    likes: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    # On the live Beeline page, names are rendered as alternating lines:
+    #   Tina
+    #   , 39
+    #   Deepika
+    #   , 38
+    # Prefer this pattern because it avoids false positives like "Enable".
+    for idx, line in enumerate(segment[:-1]):
+        next_line = segment[idx + 1]
+        if not re.fullmatch(r",\s*\d{1,2}", next_line):
+            continue
+        candidate = _normalize_space(line)
+        if len(candidate) < 2 or len(candidate) > 32:
+            continue
+        if any(ch.isdigit() for ch in candidate):
+            continue
+        lower = candidate.casefold()
+        if lower in seen or lower in COMMON_UI_TEXT:
+            continue
+        seen.add(lower)
+        likes.append({"name": candidate, "visible": True})
+
+    if likes:
+        return likes
+
+    for line in segment:
+        lower = line.casefold()
+        if lower.startswith("enable desktop notifications"):
+            break
+        if line in {"Enable", "Send", "Back to meeting new people", "Conversations", "Liked You", "Your Beeline"}:
+            continue
+        if not _looks_like_name(line):
+            continue
+        key = lower
+        if key in seen:
+            continue
+        seen.add(key)
+        likes.append({"name": line, "visible": True})
+    return likes
+
+
+def extract_like_count(raw_text: str) -> Optional[int]:
+    """Extract total admirer count when Bumble exposes it in text."""
+    source = _normalize_space(raw_text)
+    if not source:
+        return None
+    if "no one has liked you yet" in source.lower() or "you don't have any admirers yet" in source.lower():
+        return 0
+    patterns = [
+        r"(\d+)\s+(?:people\s+)?(?:have\s+)?liked you",
+        r"(\d+)\s+admirers?",
+        r"liked you\s*[:\-]?\s*(\d+)",
+        r"admirers?\s*[:\-]?\s*(\d+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, source, flags=re.I)
+        if match:
+            try:
+                return int(match.group(1))
+            except Exception:
+                continue
+    return None
+
+
+def beeline_premium_required(raw_text: str, page_html: str = "") -> bool:
+    """True when Beeline appears to be gated behind a premium upsell."""
+    source = f"{raw_text}\n{page_html}".lower()
+    tokens = (
+        "see who likes you",
+        "unlock your admirers",
+        "unlock beeline",
+        "upgrade to premium",
+        "get premium",
+        "bumble premium",
+        "admirers are blurred",
+        "liked you is part of premium",
+    )
+    return any(token in source for token in tokens)
+
+
+def extract_visible_like_names(content: Optional[dict[str, str]] = None) -> list[str]:
+    """Fallback extraction of visible admirer names from Beeline text + interactive nodes."""
+    content = content or get_content()
+    candidates: list[str] = []
+    if content:
+        for line in (content.get("text") or "").splitlines():
+            item = _normalize_space(line)
+            if _looks_like_name(item):
+                candidates.append(item)
+    for node in _get_interactive_nodes():
+        item = _normalize_space(str(node.get("name") or ""))
+        if _looks_like_name(item):
+            candidates.append(item)
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in candidates:
+        key = item.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
 
 
 def _contact_selector(match_name: str) -> str:
@@ -1394,6 +1581,121 @@ def list_matches() -> bool:
     return True
 
 
+def list_likes() -> bool:
+    """Navigate to Bumble Beeline and print admirer info as JSON."""
+    content = open_beeline()
+    if not content:
+        print(json.dumps({"ok": False, "error": "Failed to open Bumble Beeline"}, ensure_ascii=True, indent=2))
+        return False
+
+    state = get_state(content)
+    url = content.get("url", "")
+    if state == "logged_out":
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "state": state,
+                    "url": url,
+                    "error": "Bumble is logged out; run auth first and enter the SMS code.",
+                    "likes": [],
+                },
+                ensure_ascii=True,
+                indent=2,
+            )
+        )
+        return False
+    if state == "awaiting_sms_code":
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "state": state,
+                    "url": url,
+                    "error": "Bumble is waiting for the 6-digit SMS code; complete login first.",
+                    "likes": [],
+                },
+                ensure_ascii=True,
+                indent=2,
+            )
+        )
+        return False
+    if state == "captcha_challenge":
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "state": state,
+                    "url": url,
+                    "error": "Bumble is waiting for a manual CAPTCHA challenge to be completed.",
+                    "likes": [],
+                },
+                ensure_ascii=True,
+                indent=2,
+            )
+        )
+        return False
+    if state == "passkey_prompt":
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "state": state,
+                    "url": url,
+                    "error": "Bumble is on the passkey setup screen; tap 'Not Now' in the browser or retry after the client skips it.",
+                    "likes": [],
+                },
+                ensure_ascii=True,
+                indent=2,
+            )
+        )
+        return False
+    if "/app/beeline" not in url.lower():
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "state": state,
+                    "url": url,
+                    "error": "Bumble did not stay on the Beeline / likes page.",
+                    "likes": [],
+                },
+                ensure_ascii=True,
+                indent=2,
+            )
+        )
+        return False
+
+    raw_content = get_page_content(SESSION_ID, mode="raw")
+    raw_text = (raw_content or {}).get("text", "") or ""
+    page_html = _get_html()
+    likes = extract_likes_from_raw_text(raw_text)
+    if not likes:
+        likes = [{"name": n, "visible": True} for n in extract_visible_like_names(content)]
+
+    total_like_count = extract_like_count(raw_text)
+    premium_required = beeline_premium_required(raw_text, page_html)
+    if total_like_count is None and premium_required and not likes:
+        total_like_count = 0 if "no one has liked you yet" in raw_text.lower() else None
+
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "state": state,
+                "url": url,
+                "likes": likes,
+                "visible_count": len(likes),
+                "total_like_count": total_like_count,
+                "premium_required": premium_required,
+            },
+            ensure_ascii=True,
+            indent=2,
+        )
+    )
+    return True
+
+
 def enter_sms_code(code: str) -> bool:
     """Enter the 6-digit Bumble SMS code and continue."""
     normalized = re.sub(r"\D", "", code)
@@ -1602,13 +1904,16 @@ def enter_sms_code(code: str) -> bool:
 
     passkey_skipped = False
     if "/registration/passkey" in new_url.lower() or new_state == "passkey_prompt":
-        if skip_passkey_not_now():
-            _pause()
+        for _ in range(3):
+            if skip_passkey_not_now():
+                _pause()
             time.sleep(2)
             content = get_content()
             new_state = get_state(content)
             new_url = (content or {}).get("url", "")
-            passkey_skipped = "/registration/passkey" not in new_url.lower()
+            if "/registration/passkey" not in new_url.lower() and new_state != "passkey_prompt":
+                passkey_skipped = True
+                break
         else:
             return _entry_error(
                 "SMS code was accepted, but tapping 'Not Now' on the passkey screen failed; complete it manually in the browser."
@@ -1645,22 +1950,36 @@ def skip_passkey_not_now() -> bool:
     """
     On Bumble /registration/passkey, tap secondary action 'Not Now' (decline passkey for now).
     """
-    content = get_content()
-    if not content:
+    def _still_on_passkey() -> bool:
+        current = get_content()
+        if not current:
+            return False
+        return "/registration/passkey" in ((current.get("url") or "").lower())
+
+    if not _still_on_passkey():
         return False
-    url = (content.get("url") or "").lower()
-    if "/registration/passkey" not in url:
-        return False
-    for label in ("Not Now", "Not now", "not now"):
-        if tap_text(label):
+
+    labels = ("Not Now", "Not now", "not now")
+    for _ in range(3):
+        for label in labels:
+            if tap_text(label):
+                time.sleep(1.0)
+                if not _still_on_passkey():
+                    return True
+            el = find_element_by_text(SESSION_ID, label, filter="interactive")
+            if el and tap_ref(el.get("ref")):
+                time.sleep(1.0)
+                if not _still_on_passkey():
+                    return True
+            el = find_element_by_text(SESSION_ID, label)
+            if el and tap_ref(el.get("ref")):
+                time.sleep(1.0)
+                if not _still_on_passkey():
+                    return True
+        time.sleep(1.0)
+        if not _still_on_passkey():
             return True
-        el = find_element_by_text(SESSION_ID, label, filter="interactive")
-        if el and tap_ref(el.get("ref")):
-            return True
-        el = find_element_by_text(SESSION_ID, label)
-        if el and tap_ref(el.get("ref")):
-            return True
-    return False
+    return not _still_on_passkey()
 
 
 def tap_text(text_to_find: str) -> bool:
@@ -1896,7 +2215,7 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 2:
-        print("Usage: python bumble_client.py ensure | content | auth <phone> | sms_code <code> | matches | messages <name> | profile <name> | photos <name> <directory> | send <name> <message> | debug | state | tap <text> | snapshot")
+        print("Usage: python bumble_client.py ensure | content | auth <phone> | sms_code <code> | matches | likes | messages <name> | profile <name> | photos <name> <directory> | send <name> <message> | debug | state | tap <text> | snapshot")
         sys.exit(1)
 
     cmd = sys.argv[1].lower()
@@ -1937,6 +2256,10 @@ if __name__ == "__main__":
 
     if cmd == "matches":
         ok = list_matches()
+        sys.exit(0 if ok else 1)
+
+    if cmd == "likes":
+        ok = list_likes()
         sys.exit(0 if ok else 1)
 
     if cmd == "messages":

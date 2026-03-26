@@ -57,6 +57,12 @@ List matches:
 python3 skills/bumble-client/scripts/bumble_client.py matches
 ```
 
+List likes / Beeline admirers:
+
+```bash
+python3 skills/bumble-client/scripts/bumble_client.py likes
+```
+
 Read messages for a match:
 
 ```bash
