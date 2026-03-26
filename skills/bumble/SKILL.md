@@ -1,5 +1,5 @@
 ---
-name: bumble-client
+name: bumble
 description: >
   Bumble session, auth, matches, messages, sending, and profile-photo export via
   Remote Browser Service. Use to resume an existing Bumble app session, inspect

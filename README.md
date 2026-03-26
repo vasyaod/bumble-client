@@ -4,9 +4,9 @@ Small CLI project and OpenClaw skill for driving Bumble through a Remote Browser
 
 It includes:
 
-- `skills/bumble-client/SKILL.md`: skill instructions and operating constraints
-- `skills/bumble-client/scripts/bumble_client.py`: high-level Bumble flows such as auth, state inspection, matches, messages, sending, profiles, and photo export
-- `skills/bumble-client/scripts/rbs_client.py`: low-level HTTP client for the Remote Browser Service API
+- `skills/bumble/SKILL.md`: skill instructions and operating constraints
+- `skills/bumble/scripts/bumble_client.py`: high-level Bumble flows such as auth, state inspection, matches, messages, sending, profiles, and photo export
+- `skills/bumble/scripts/rbs_client.py`: low-level HTTP client for the Remote Browser Service API
 
 ## Requirements
 
@@ -33,69 +33,69 @@ Run commands from the repository root:
 Inspect current session state:
 
 ```bash
-python3 skills/bumble-client/scripts/bumble_client.py state
-python3 skills/bumble-client/scripts/bumble_client.py debug
-python3 skills/bumble-client/scripts/bumble_client.py content
-python3 skills/bumble-client/scripts/bumble_client.py snapshot
+python3 skills/bumble/scripts/bumble_client.py state
+python3 skills/bumble/scripts/bumble_client.py debug
+python3 skills/bumble/scripts/bumble_client.py content
+python3 skills/bumble/scripts/bumble_client.py snapshot
 ```
 
 Start auth flow with a phone number:
 
 ```bash
-python3 skills/bumble-client/scripts/bumble_client.py auth "<user_phone_number>"
+python3 skills/bumble/scripts/bumble_client.py auth "<user_phone_number>"
 ```
 
 Submit the SMS verification code:
 
 ```bash
-python3 skills/bumble-client/scripts/bumble_client.py sms_code "<6-digit-code>"
+python3 skills/bumble/scripts/bumble_client.py sms_code "<6-digit-code>"
 ```
 
 List matches:
 
 ```bash
-python3 skills/bumble-client/scripts/bumble_client.py matches
+python3 skills/bumble/scripts/bumble_client.py matches
 ```
 
 List likes / Beeline admirers:
 
 ```bash
-python3 skills/bumble-client/scripts/bumble_client.py likes
+python3 skills/bumble/scripts/bumble_client.py likes
 ```
 
 Read messages for a match:
 
 ```bash
-python3 skills/bumble-client/scripts/bumble_client.py messages "Kritika"
+python3 skills/bumble/scripts/bumble_client.py messages "Kritika"
 ```
 
 Send a message:
 
 ```bash
-python3 skills/bumble-client/scripts/bumble_client.py send "Kritika" "Hello there"
+python3 skills/bumble/scripts/bumble_client.py send "Kritika" "Hello there"
 ```
 
 Fetch a profile:
 
 ```bash
-python3 skills/bumble-client/scripts/bumble_client.py profile "Kritika"
+python3 skills/bumble/scripts/bumble_client.py profile "Kritika"
 ```
 
 Export profile photos:
 
 ```bash
-python3 skills/bumble-client/scripts/bumble_client.py photos "Anya" "/absolute/output/dir"
+python3 skills/bumble/scripts/bumble_client.py photos "Anya" "/absolute/output/dir"
 ```
 
 Low-level tap helper:
 
 ```bash
-python3 skills/bumble-client/scripts/bumble_client.py tap "Continue with other methods"
+python3 skills/bumble/scripts/bumble_client.py tap "Continue with other methods"
 ```
 
 ## ClawHub Packaging
 
-The publishable skill bundle lives in `skills/bumble-client`.
+The publishable skill bundle lives in `skills/bumble`.
 
 ## Session Behavior
 
