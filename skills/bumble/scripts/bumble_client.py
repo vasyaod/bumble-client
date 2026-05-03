@@ -84,6 +84,7 @@ EXPIRED_CONVERSATION_RE = re.compile(
     re.IGNORECASE,
 )
 CONTACT_SELECTOR_TEMPLATE = '.contact[data-qa-role="contact"][data-qa-name="{name}"]'
+MATCH_QUEUE_SELECTOR_TEMPLATE = '[data-qa-role="carousel-contact"][data-qa-name="{name}"]'
 CHAT_INPUT_SELECTOR = '[data-qa-role="chat-input"] textarea'
 CHAT_SEND_SELECTOR = "button.message-field__send"
 PROFILE_PHOTO_SELECTOR = "aside.page__profile img.profile__photo"
@@ -361,6 +362,56 @@ def extract_match_names_from_raw_text(raw_text: str) -> list[str]:
     return [m["name"] for m in extract_matches_from_raw_text(raw_text)]
 
 
+def extract_match_queue_names_from_html(page_html: str) -> list[str]:
+    """Extract Match Queue names from the connections HTML carousel."""
+    if not page_html:
+        return []
+    start = page_html.find('match-queue-tab-section-content')
+    if start == -1:
+        return []
+    end = page_html.find('conversations-tab-section', start)
+    if end == -1:
+        end = len(page_html)
+    segment = page_html[start:end]
+    pattern = re.compile(
+        r'data-qa-role="carousel-contact"[^>]*data-qa-name="([^"]+)"'
+        r'|data-qa-name="([^"]+)"[^>]*data-qa-role="carousel-contact"'
+    )
+    names: list[str] = []
+    seen: set[str] = set()
+    for match in pattern.finditer(segment):
+        name = html_lib.unescape(match.group(1) or match.group(2) or "").strip()
+        if not name:
+            continue
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+    return names
+
+
+def collect_all_match_entries(
+    raw_text: str, page_html: str
+) -> list[dict[str, Any]]:
+    """Merged list: conversations (with expired flag) + Match Queue names."""
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in extract_matches_from_raw_text(raw_text):
+        key = str(row["name"]).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append({"name": row["name"], "expired": row.get("expired", False), "source": "conversations"})
+    for name in extract_match_queue_names_from_html(page_html):
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append({"name": name, "expired": False, "source": "queue"})
+    return entries
+
+
 def _beeline_segment_from_raw_text(raw_text: str) -> list[str]:
     """Lines likely belonging to the Beeline / admirers view."""
     lines = [_normalize_space(line) for line in raw_text.splitlines()]
@@ -514,6 +565,11 @@ def _contact_selector(match_name: str) -> str:
     return CONTACT_SELECTOR_TEMPLATE.format(name=escaped)
 
 
+def _match_queue_selector(match_name: str) -> str:
+    escaped = match_name.replace("\\", "\\\\").replace('"', '\\"')
+    return MATCH_QUEUE_SELECTOR_TEMPLATE.format(name=escaped)
+
+
 def _active_profile_name(page_html: Optional[str] = None) -> str:
     page_html = page_html or _get_html()
     if not page_html:
@@ -554,25 +610,30 @@ def open_match(match_name: str) -> bool:
     if _wait_for_active_match(match_name, attempts=1, delay_seconds=0):
         return True
 
-    selector = _contact_selector(match_name)
-    bounds_resp = element_bounds(SESSION_ID, selector=selector)
-    if bounds_resp.status_code == 200:
-        box = bounds_resp.json()
-        x = int(box["x"] + box["width"] / 2)
-        y = int(box["y"] + box["height"] / 2)
+    selectors = [_contact_selector(match_name), _match_queue_selector(match_name)]
+    for selector in selectors:
+        bounds_resp = element_bounds(SESSION_ID, selector=selector)
+        if bounds_resp.status_code == 200:
+            try:
+                box = bounds_resp.json()
+                x = int(box["x"] + box["width"] / 2)
+                y = int(box["y"] + box["height"] / 2)
+            except Exception:
+                x = y = None
+            if x is not None:
+                for kind in ("tap", "click"):
+                    resp = action(SESSION_ID, kind=kind, x=x, y=y)
+                    if resp.status_code == 200:
+                        _pause()
+                        if _wait_for_active_match(match_name):
+                            return True
+
         for kind in ("tap", "click"):
-            resp = action(SESSION_ID, kind=kind, x=x, y=y)
+            resp = action(SESSION_ID, kind=kind, selector=selector)
             if resp.status_code == 200:
                 _pause()
                 if _wait_for_active_match(match_name):
                     return True
-
-    for kind in ("tap", "click"):
-        resp = action(SESSION_ID, kind=kind, selector=selector)
-        if resp.status_code == 200:
-            _pause()
-            if _wait_for_active_match(match_name):
-                return True
     return False
 
 
@@ -1080,6 +1141,30 @@ def get_profile(match_name: str) -> bool:
         )
         return False
 
+    # Verify the requested name is actually one of the current matches before
+    # opening, so a stale right-side profile panel cannot be mistaken for a match.
+    raw_content = get_page_content(SESSION_ID, mode="raw")
+    raw_text = (raw_content or {}).get("text", "") or ""
+    page_html = _get_html()
+    match_names = [m["name"] for m in collect_all_match_entries(raw_text, page_html)]
+    target = _normalize_space(match_name).casefold()
+    if target not in {n.casefold() for n in match_names}:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "match": match_name,
+                    "state": state,
+                    "url": url,
+                    "error": f"Match '{match_name}' is not in the current Bumble matches list.",
+                    "available_matches": match_names,
+                },
+                ensure_ascii=True,
+                indent=2,
+            )
+        )
+        return False
+
     if not open_match(match_name):
         print(
             json.dumps(
@@ -1537,10 +1622,11 @@ def list_matches() -> bool:
 
     raw_content = get_page_content(SESSION_ID, mode="raw")
     raw_text = (raw_content or {}).get("text", "") or ""
-    matches: list[dict[str, Any]] = extract_matches_from_raw_text(raw_text)
+    page_html = _get_html()
+    matches: list[dict[str, Any]] = collect_all_match_entries(raw_text, page_html)
     if not matches:
         names = extract_visible_match_names(content)
-        matches = [{"name": n, "expired": None} for n in names]
+        matches = [{"name": n, "expired": None, "source": "conversations"} for n in names]
     if not matches:
         debug_page()
         print(
@@ -1561,6 +1647,7 @@ def list_matches() -> bool:
     expired_count = sum(1 for m in matches if m.get("expired") is True)
     active_count = sum(1 for m in matches if m.get("expired") is False)
     unknown_count = sum(1 for m in matches if m.get("expired") is None)
+    queue_count = sum(1 for m in matches if m.get("source") == "queue")
 
     print(
         json.dumps(
@@ -1573,6 +1660,7 @@ def list_matches() -> bool:
                 "expired_count": expired_count,
                 "active_count": active_count,
                 "unknown_expired_count": unknown_count,
+                "queue_count": queue_count,
             },
             ensure_ascii=True,
             indent=2,
