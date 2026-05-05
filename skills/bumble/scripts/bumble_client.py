@@ -115,7 +115,7 @@ def _normalize_phone_digits(raw: str) -> str:
 
 
 def _pause() -> None:
-    """Random 1-4 sec pause to avoid detection (AGENTS.md)."""
+    """Short 1-4 second jitter between actions so the page can settle and rate-limits stay relaxed."""
     time.sleep(random.uniform(1, 4))
 
 
@@ -206,7 +206,7 @@ def open_connections() -> Optional[dict[str, str]]:
     state = get_state(content)
     if state == "passkey_prompt":
         for _ in range(2):
-            if not skip_passkey_not_now():
+            if not dismiss_passkey_prompt():
                 break
             _pause()
             time.sleep(1.5)
@@ -241,7 +241,7 @@ def open_beeline() -> Optional[dict[str, str]]:
     state = get_state(content)
     if state == "passkey_prompt":
         for _ in range(2):
-            if not skip_passkey_not_now():
+            if not dismiss_passkey_prompt():
                 break
             _pause()
             time.sleep(1.5)
@@ -1993,7 +1993,7 @@ def enter_sms_code(code: str) -> bool:
     passkey_skipped = False
     if "/registration/passkey" in new_url.lower() or new_state == "passkey_prompt":
         for _ in range(3):
-            if skip_passkey_not_now():
+            if dismiss_passkey_prompt():
                 _pause()
             time.sleep(2)
             content = get_content()
@@ -2034,9 +2034,11 @@ def resume_existing_session() -> bool:
     return True
 
 
-def skip_passkey_not_now() -> bool:
+def dismiss_passkey_prompt() -> bool:
     """
-    On Bumble /registration/passkey, tap secondary action 'Not Now' (decline passkey for now).
+    On Bumble's /registration/passkey screen, tap the official 'Not Now' button so
+    the user is not pressured into enrolling a passkey on this device.
+    The script never creates or registers a passkey; it only declines the prompt.
     """
     def _still_on_passkey() -> bool:
         current = get_content()

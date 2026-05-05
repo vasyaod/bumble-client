@@ -293,7 +293,7 @@ if __name__ == "__main__":
     if session == "bumble":
         if not ensure_session(session, bumble_url, latitude=sf_lat, longitude=sf_lon):
             sys.exit(1)
-        time.sleep(2)  # anti-detection pause per AGENTS.md
+        time.sleep(2)  # small settle pause between page actions
     elif session == "tinder":
         if not ensure_session(session, "https://tinder.com/app", latitude=sf_lat, longitude=sf_lon):
             sys.exit(1)

@@ -9,6 +9,25 @@ description: >
 
 # Bumble Client
 
+## Intended use
+
+This skill drives the operator's own Bumble web account inside a remote browser the
+operator already owns. It is intended for personal automation: resuming the user's
+session, listing the user's own matches and likes, reading and sending messages
+where the user already has the right to chat, and exporting photos that the user's
+account is already authorized to view.
+
+It does **not**:
+
+- create new Bumble accounts
+- crack, brute-force, or bypass any Bumble authentication step
+- defeat CAPTCHA or any anti-abuse defense (CAPTCHA screens halt the flow and
+  require the human operator to solve them)
+- automate any messaging that the Bumble backend does not already permit
+- collect data from anyone other than the operator's own match list
+
+The phone number and SMS code are supplied by the operator, not generated.
+
 ## Session policy
 
 - Always start from `https://bumble.com/app`.
@@ -74,7 +93,7 @@ Current behavior:
   - `state: "captcha_challenge"`
   - `sms_code_accepted: true`
   - an error saying manual CAPTCHA completion is required
-- If the SMS code is accepted and Bumble moves to `/registration/passkey`, the client taps **Not Now** (skip for now). Do **not** tap **Create a passkey** or complete passkey enrollment automatically. `open_connections` also attempts the same skip if a stored session resumes on that screen.
+- If the SMS code is accepted and Bumble moves to `/registration/passkey`, the client taps Bumble's official **Not Now** button to decline the optional passkey-enrollment prompt. The client never creates, registers, or stores a passkey; it only declines the prompt so the user is not pressured into enrolling a passkey on a remote device. `open_connections` also declines this prompt if a stored session resumes on that screen.
 
 ## Messages
 
