@@ -3,7 +3,7 @@ name: bumble
 description: >
   Bumble session, auth, matches, messages, sending, and profile-photo export via
   Remote Browser Service. Use to resume an existing Bumble app session, inspect
-  state, list matches, fetch/send messages, export profile photos, or
+  state, list matches, fetch/send messages, unmatch, export profile photos, or
   re-authenticate only when Bumble is on get-started/auth pages.
 ---
 
@@ -51,6 +51,7 @@ python scripts/bumble_client.py matches  # JSON: matches[{name, expired}], expir
 python scripts/bumble_client.py likes    # JSON: visible likes plus Beeline count/premium signal when available
 python scripts/bumble_client.py messages "Kritika"  # returns JSON with author field
 python scripts/bumble_client.py send "Kritika" "message text"
+python scripts/bumble_client.py unmatch "Kritika"
 python scripts/bumble_client.py photos "Kritika" "/absolute/output/dir"
 ```
 
@@ -60,6 +61,7 @@ python scripts/bumble_client.py photos "Kritika" "/absolute/output/dir"
 - Do **not** assume the click worked just because the action returned 200.
 - Verify that the active profile / conversation on the right changed to the requested match name.
 - If the requested name is wrong or the active profile name does not match exactly, return an error instead of silently using the previously open match.
+- **Unmatch** is under the chat header **sandwich (⋮) menu** on the right (first icon; `generic-menu` in the DOM), then **Unmatch** in that menu. Bumble then shows a modal: choose the **Unmatch** row (not “Block and report”), then confirm any follow-up prompts.
 
 ## Auth flow
 

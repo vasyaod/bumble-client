@@ -87,7 +87,33 @@ CONTACT_SELECTOR_TEMPLATE = '.contact[data-qa-role="contact"][data-qa-name="{nam
 MATCH_QUEUE_SELECTOR_TEMPLATE = '[data-qa-role="carousel-contact"][data-qa-name="{name}"]'
 CHAT_INPUT_SELECTOR = '[data-qa-role="chat-input"] textarea'
 CHAT_SEND_SELECTOR = "button.message-field__send"
+# Chat header sandwich / kebab (vertical dots): opens Unmatch and Block and report.
+CHAT_SANDWICH_MENU_SELECTORS = [
+    'div.messages-header__menu-section > div.messages-header__menu-item[role="button"]:first-of-type',
+    'div.messages-header__menu-item[role="button"]:has([data-qa-icon-name="generic-menu"])',
+    '.messages-header__menu [data-qa-icon-name="generic-menu"]',
+]
+# First dropdown row under that menu is Unmatch on Bumble web.
+CHAT_UNMATCH_OPTION_SELECTORS = [
+    'div.messages-header__menu div.dropdown div.options div.option[data-qa-role="option"]:first-of-type',
+    'div.messages-header__menu .dropdown .options > .option:first-of-type',
+]
+CHAT_OVERFLOW_MENU_SELECTORS = [
+    *CHAT_SANDWICH_MENU_SELECTORS,
+    'button[data-qa-role="conversation-actions-button"]',
+    'button[data-qa-role="chat-actions-button"]',
+    '[data-qa-role="conversation-header-menu"]',
+    '[data-qa-role="chat-menu-button"]',
+    "aside.page__chat header button[aria-label*='More']",
+    "header.page__header button[aria-label*='More']",
+    'button[aria-label*="More options"]',
+    'button[aria-label*="more options"]',
+]
 PROFILE_PHOTO_SELECTOR = "aside.page__profile img.profile__photo"
+_OVERFLOW_MENU_BUTTON_NAME_RE = re.compile(
+    r"(more\s+options|open\s+menu|conversation\s+actions|chat\s+actions|^\s*menu\s*$|^\.\.\.\s*$)",
+    re.I,
+)
 BADGE_KEY_LABELS = {
     "height": "Height",
     "exercise": "Exercise",
@@ -2115,6 +2141,372 @@ def tap_ref(ref: Optional[str]) -> bool:
     return False
 
 
+def _conversation_overflow_menu_seems_open() -> bool:
+    resp = snapshot(SESSION_ID, filter="interactive")
+    if resp.status_code == 200:
+        try:
+            for n in resp.json().get("nodes") or []:
+                name = (n.get("name") or "").strip()
+                if "unmatch" in name.casefold():
+                    return True
+        except Exception:
+            pass
+    for label in (
+        "Unmatch",
+        "Block & Report",
+        "Block and Report",
+        "Block",
+        "Report",
+        "Snooze",
+        "Mute notifications",
+    ):
+        if find_element_by_text(SESSION_ID, label, filter="interactive"):
+            return True
+    return False
+
+
+def _unmatch_dropdown_row_visible() -> bool:
+    """True when the sandwich menu’s dropdown shows the Unmatch row (DOM has sensible size)."""
+    for sel in CHAT_UNMATCH_OPTION_SELECTORS:
+        bresp = element_bounds(SESSION_ID, selector=sel)
+        if bresp.status_code != 200:
+            continue
+        try:
+            box = bresp.json()
+            if int(box.get("width") or 0) >= 8 and int(box.get("height") or 0) >= 8:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _tap_selector_at_center(selector: str) -> bool:
+    bresp = element_bounds(SESSION_ID, selector=selector)
+    if bresp.status_code != 200:
+        return False
+    try:
+        box = bresp.json()
+        x = int(box["x"] + box["width"] / 2)
+        y = int(box["y"] + box["height"] / 2)
+    except Exception:
+        return False
+    for kind in ("tap", "click"):
+        if action(SESSION_ID, kind=kind, x=x, y=y).status_code == 200:
+            return True
+    return False
+
+
+def _css_quoted_attr(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _button_selectors_for_aria_substrings(page_html: str, substrings: tuple[str, ...]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in re.finditer(r"<button\b([^>]*?)>", page_html, flags=re.I | re.S):
+        attrs = m.group(1)
+        lab_m = re.search(r'aria-label\s*=\s*"([^"]*)"', attrs, flags=re.I)
+        if not lab_m:
+            lab_m = re.search(r"aria-label\s*=\s*'([^']*)'", attrs, flags=re.I)
+        if not lab_m:
+            continue
+        label = html_lib.unescape(lab_m.group(1).strip())
+        lower = label.casefold()
+        if any(s.casefold() in lower for s in substrings):
+            sel = f'button[aria-label="{_css_quoted_attr(label)}"]'
+            if sel not in seen:
+                seen.add(sel)
+                out.append(sel)
+    return out
+
+
+def _open_conversation_overflow_menu() -> bool:
+    page_html = _get_html()
+
+    for sel in CHAT_OVERFLOW_MENU_SELECTORS:
+        if tap_selector(sel):
+            time.sleep(0.35)
+            if _conversation_overflow_menu_seems_open() or _unmatch_dropdown_row_visible():
+                return True
+
+    aria_substrings: tuple[str, ...] = (
+        "More options",
+        "more options",
+        "Open menu",
+        "Conversation options",
+        "Chat options",
+        "Conversation actions",
+    )
+    for sel in _button_selectors_for_aria_substrings(page_html, aria_substrings):
+        if tap_selector(sel):
+            time.sleep(0.35)
+            if _conversation_overflow_menu_seems_open() or _unmatch_dropdown_row_visible():
+                return True
+
+    for text_probe in ("More options", "Open menu", "Menu"):
+        if tap_text(text_probe):
+            time.sleep(0.35)
+            if _conversation_overflow_menu_seems_open() or _unmatch_dropdown_row_visible():
+                return True
+
+    resp = snapshot(SESSION_ID, filter="interactive")
+    if resp.status_code == 200:
+        try:
+            nodes = resp.json().get("nodes") or []
+        except Exception:
+            nodes = []
+        for n in nodes:
+            if (n.get("role") or "").lower() != "button":
+                continue
+            name = _normalize_space(str(n.get("name") or ""))
+            if _OVERFLOW_MENU_BUTTON_NAME_RE.search(name):
+                if tap_ref(n.get("ref")):
+                    time.sleep(0.35)
+                    if _conversation_overflow_menu_seems_open() or _unmatch_dropdown_row_visible():
+                        return True
+    return False
+
+
+def _tap_unmatch_menu_item() -> bool:
+    for sel in CHAT_UNMATCH_OPTION_SELECTORS:
+        if tap_selector(sel):
+            return True
+        if _tap_selector_at_center(sel):
+            return True
+    resp = snapshot(SESSION_ID, filter="interactive")
+    if resp.status_code == 200:
+        try:
+            nodes = resp.json().get("nodes") or []
+        except Exception:
+            nodes = []
+        for n in nodes:
+            name = (n.get("name") or "").strip()
+            if "unmatch" in name.casefold() and "block" in name.casefold():
+                if tap_ref(n.get("ref")):
+                    return True
+    for label in ("Unmatch",):
+        if tap_text(label):
+            return True
+        el = find_element_by_text(SESSION_ID, label, filter="interactive")
+        if el and tap_ref(el.get("ref")):
+            return True
+    combined = get_bbox_by_text(SESSION_ID, "Unmatch Block and report", filter="interactive")
+    if combined and "x" in combined and "width" in combined:
+        cx = int(combined["x"] + combined["width"] / 2)
+        cy = int(combined["y"] + int(combined["height"]) * 0.22)
+        for kind in ("tap", "click"):
+            if action(SESSION_ID, kind=kind, x=cx, y=cy).status_code == 200:
+                return True
+    return False
+
+
+def _confirm_unmatch_modals() -> None:
+    time.sleep(0.8)
+    for label in (
+        "I'm just not interested",
+        "I am just not interested",
+        "It's not them, it's me",
+        "Its not them, its me",
+        "Not interested",
+        "Just not interested",
+    ):
+        if tap_text(label):
+            _pause()
+            break
+    for _ in range(4):
+        tapped = False
+        for label in ("Unmatch", "Yes, unmatch", "Yes, Unmatch", "Confirm", "Continue"):
+            if tap_text(label):
+                _pause()
+                tapped = True
+                time.sleep(0.8)
+                break
+        if not tapped:
+            time.sleep(0.5)
+        else:
+            break
+
+
+def _pick_unmatch_branch_in_first_modal() -> None:
+    """
+    After the header sandwich → Unmatch, Bumble shows a modal titled 'Unmatch this person'
+    with two rows: 'Unmatch' and 'Block and report'. We must open the Unmatch branch first.
+    """
+    time.sleep(0.6)
+    if "Unmatch this person" not in _get_html():
+        return
+    sel = 'div.dialog--m .choice-group__item:first-of-type label[data-qa-role="choice-field"]'
+    if not tap_selector(sel):
+        _tap_selector_at_center(sel)
+    time.sleep(0.9)
+
+
+def unmatch_match(match_name: str) -> bool:
+    """Open a match chat, choose Unmatch from the overflow menu, confirm dialogs, and verify the list."""
+    normalized = _normalize_space(match_name)
+    if not normalized:
+        print(
+            json.dumps(
+                {"ok": False, "error": "Match name is empty."},
+                ensure_ascii=True,
+                indent=2,
+            )
+        )
+        return False
+
+    content = open_connections()
+    if not content:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "match": normalized,
+                    "error": "Failed to open Bumble connections.",
+                },
+                ensure_ascii=True,
+                indent=2,
+            )
+        )
+        return False
+
+    state = get_state(content)
+    url = (content or {}).get("url", "")
+    if state in ("logged_out", "awaiting_sms_code", "captcha_challenge", "passkey_prompt"):
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "match": normalized,
+                    "state": state,
+                    "url": url,
+                    "error": "Bumble session is not in a logged-in state.",
+                },
+                ensure_ascii=True,
+                indent=2,
+            )
+        )
+        return False
+
+    raw_content = get_page_content(SESSION_ID, mode="raw")
+    raw_text = (raw_content or {}).get("text", "") or ""
+    page_html = _get_html()
+    match_names = [m["name"] for m in collect_all_match_entries(raw_text, page_html)]
+    target_cf = normalized.casefold()
+    if target_cf not in {n.casefold() for n in match_names}:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "match": normalized,
+                    "state": state,
+                    "url": url,
+                    "error": f"Match '{normalized}' is not in the current Bumble matches list.",
+                    "available_matches": match_names,
+                },
+                ensure_ascii=True,
+                indent=2,
+            )
+        )
+        return False
+
+    if not open_match(normalized):
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "match": normalized,
+                    "error": f"Failed to open Bumble match: {normalized}",
+                },
+                ensure_ascii=True,
+                indent=2,
+            )
+        )
+        return False
+
+    if not _wait_for_active_match(normalized):
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "match": normalized,
+                    "error": "Active chat did not open for the requested match.",
+                },
+                ensure_ascii=True,
+                indent=2,
+            )
+        )
+        return False
+
+    if not _open_conversation_overflow_menu():
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "match": normalized,
+                    "error": "Could not open the conversation overflow menu (More / ⋯).",
+                },
+                ensure_ascii=True,
+                indent=2,
+            )
+        )
+        return False
+
+    if not _tap_unmatch_menu_item():
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "match": normalized,
+                    "error": "Unmatch was not found in the overflow menu.",
+                },
+                ensure_ascii=True,
+                indent=2,
+            )
+        )
+        return False
+
+    _pick_unmatch_branch_in_first_modal()
+    _pause()
+    _confirm_unmatch_modals()
+    _pause()
+
+    open_connections()
+    time.sleep(1.5)
+    _pause()
+    raw_content = get_page_content(SESSION_ID, mode="raw")
+    raw_text = (raw_content or {}).get("text", "") or ""
+    page_html = _get_html()
+    match_names_after = [m["name"] for m in collect_all_match_entries(raw_text, page_html)]
+    removed = target_cf not in {n.casefold() for n in match_names_after}
+
+    if not removed:
+        time.sleep(2.0)
+        open_connections()
+        _pause()
+        raw_content = get_page_content(SESSION_ID, mode="raw")
+        raw_text = (raw_content or {}).get("text", "") or ""
+        page_html = _get_html()
+        match_names_after = [m["name"] for m in collect_all_match_entries(raw_text, page_html)]
+        removed = target_cf not in {n.casefold() for n in match_names_after}
+
+    print(
+        json.dumps(
+            {
+                "ok": removed,
+                "match": normalized,
+                "removed_from_list": removed,
+                "matches_after": match_names_after,
+                "note": None
+                if removed
+                else "Unmatch flow ran but the name still appears in the list; check the browser or retry.",
+            },
+            ensure_ascii=True,
+            indent=2,
+        )
+    )
+    return removed
+
+
 def type_into(selector_or_ref: str, value: str) -> bool:
     """Type into element. Accepts ref (e.g. e15) or CSS selector."""
     resp = action(SESSION_ID, kind="type", selector=selector_or_ref, text=value)
@@ -2305,7 +2697,7 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 2:
-        print("Usage: python bumble_client.py ensure | content | auth <phone> | sms_code <code> | matches | likes | messages <name> | profile <name> | photos <name> <directory> | send <name> <message> | debug | state | tap <text> | snapshot")
+        print("Usage: python bumble_client.py ensure | content | auth <phone> | sms_code <code> | matches | likes | messages <name> | profile <name> | photos <name> <directory> | send <name> <message> | unmatch <name> | debug | state | tap <text> | snapshot")
         sys.exit(1)
 
     cmd = sys.argv[1].lower()
@@ -2378,6 +2770,13 @@ if __name__ == "__main__":
             print("Usage: python bumble_client.py send <match-name> <message>")
             sys.exit(1)
         ok = send_message(sys.argv[2], " ".join(sys.argv[3:]))
+        sys.exit(0 if ok else 1)
+
+    if cmd == "unmatch":
+        if len(sys.argv) < 3:
+            print("Usage: python bumble_client.py unmatch <match-name>")
+            sys.exit(1)
+        ok = unmatch_match(" ".join(sys.argv[2:]))
         sys.exit(0 if ok else 1)
 
     if cmd == "debug":
