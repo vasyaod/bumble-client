@@ -345,7 +345,7 @@ def extract_matches_from_raw_text(raw_text: str) -> list[dict[str, Any]]:
     Expired rows show copy like 'Conversation expired yesterday' under the name.
     """
     segment = _sidebar_segment_from_raw_text(raw_text)
-    skip_lines = {"(Recent)", "Your move"}
+    skip_lines = {"(Recent)", "Your move", "Their move", "Expired", "Archived", "Recent"}
 
     i = 0
     rows: list[dict[str, Any]] = []
@@ -388,6 +388,68 @@ def extract_match_names_from_raw_text(raw_text: str) -> list[str]:
     return [m["name"] for m in extract_matches_from_raw_text(raw_text)]
 
 
+def _conversations_sidebar_html_segment(page_html: str) -> str:
+    """HTML for the conversations list column (excludes main chat pane when possible)."""
+    if not page_html:
+        return ""
+    key = 'data-qa-role="conversations-tab-section"'
+    start = page_html.find(key)
+    if start == -1:
+        return ""
+    end = len(page_html)
+    for marker in (
+        'class="messages-header"',
+        'class="page__chat"',
+    ):
+        pos = page_html.find(marker, start + len(key))
+        if pos != -1 and pos < end:
+            end = pos
+    return page_html[start:end]
+
+
+def extract_conversation_contacts_from_html(page_html: str) -> list[dict[str, Any]]:
+    """
+    Sidebar contacts from DOM (includes expired threads that readability text may omit).
+    Each row: name + conversation_expired (bool).
+    """
+    seg = _conversations_sidebar_html_segment(page_html)
+    if not seg:
+        return []
+    rows: list[dict[str, Any]] = []
+    anchor = 'data-qa-role="contact"'
+    pos = 0
+    while True:
+        i = seg.find(anchor, pos)
+        if i == -1:
+            break
+        chunk = seg[i : i + 1800]
+        nm = re.search(r'data-qa-name="([^"]+)"', chunk)
+        if not nm:
+            pos = i + len(anchor)
+            continue
+        name = html_lib.unescape(nm.group(1).strip())
+        low = chunk.lower()
+        expired = False
+        if EXPIRED_CONVERSATION_RE.search(chunk):
+            expired = True
+        elif re.search(
+            r"contact--expired|conversation-expired|expiration-status-expired|chat-expired",
+            low,
+        ):
+            expired = True
+        rows.append({"name": name, "conversation_expired": expired})
+        pos = i + len(anchor)
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        key = str(row["name"]).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
+
+
 def extract_match_queue_names_from_html(page_html: str) -> list[str]:
     """Extract Match Queue names from the connections HTML carousel."""
     if not page_html:
@@ -420,21 +482,57 @@ def extract_match_queue_names_from_html(page_html: str) -> list[str]:
 def collect_all_match_entries(
     raw_text: str, page_html: str
 ) -> list[dict[str, Any]]:
-    """Merged list: conversations (with expired flag) + Match Queue names."""
+    """Merged list: conversations (DOM + text, with expired flags) + Match Queue names."""
     entries: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for row in extract_matches_from_raw_text(raw_text):
-        key = str(row["name"]).casefold()
+    text_rows = extract_matches_from_raw_text(raw_text)
+    text_by_key = {r["name"].casefold(): r for r in text_rows}
+
+    for row in extract_conversation_contacts_from_html(page_html):
+        key = row["name"].casefold()
         if key in seen:
             continue
         seen.add(key)
-        entries.append({"name": row["name"], "expired": row.get("expired", False), "source": "conversations"})
+        expired_flag = bool(row.get("conversation_expired"))
+        if text_by_key.get(key, {}).get("expired"):
+            expired_flag = True
+        entries.append(
+            {
+                "name": row["name"],
+                "source": "conversations",
+                "conversation_expired": expired_flag,
+                "expired": expired_flag,
+            }
+        )
+
+    for row in text_rows:
+        key = row["name"].casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        expired_flag = bool(row.get("expired", False))
+        entries.append(
+            {
+                "name": row["name"],
+                "source": "conversations",
+                "conversation_expired": expired_flag,
+                "expired": expired_flag,
+            }
+        )
+
     for name in extract_match_queue_names_from_html(page_html):
         key = name.casefold()
         if key in seen:
             continue
         seen.add(key)
-        entries.append({"name": name, "expired": False, "source": "queue"})
+        entries.append(
+            {
+                "name": name,
+                "source": "queue",
+                "conversation_expired": None,
+                "expired": False,
+            }
+        )
     return entries
 
 
@@ -1577,7 +1675,7 @@ def debug_page() -> bool:
 
 
 def list_matches() -> bool:
-    """Navigate to connections and print matches as JSON (name + expired flag per row)."""
+    """Navigate to connections and print matches as JSON (name, source, expired, conversation_expired)."""
     content = open_connections()
     if not content:
         print(json.dumps({"ok": False, "error": "Failed to open Bumble connections"}, ensure_ascii=True, indent=2))
@@ -1652,7 +1750,15 @@ def list_matches() -> bool:
     matches: list[dict[str, Any]] = collect_all_match_entries(raw_text, page_html)
     if not matches:
         names = extract_visible_match_names(content)
-        matches = [{"name": n, "expired": None, "source": "conversations"} for n in names]
+        matches = [
+            {
+                "name": n,
+                "expired": None,
+                "conversation_expired": None,
+                "source": "conversations",
+            }
+            for n in names
+        ]
     if not matches:
         debug_page()
         print(
@@ -1670,7 +1776,11 @@ def list_matches() -> bool:
         )
         return False
 
-    expired_count = sum(1 for m in matches if m.get("expired") is True)
+    expired_count = sum(
+        1
+        for m in matches
+        if m.get("conversation_expired") is True or m.get("expired") is True
+    )
     active_count = sum(1 for m in matches if m.get("expired") is False)
     unknown_count = sum(1 for m in matches if m.get("expired") is None)
     queue_count = sum(1 for m in matches if m.get("source") == "queue")
