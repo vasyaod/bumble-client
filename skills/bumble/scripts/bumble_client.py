@@ -2803,11 +2803,40 @@ def run_auth_flow(phone: str) -> bool:
     return True
 
 
+def read_send_message_argv(argv: list[str]) -> tuple[str, str]:
+    """
+    Parse argv for send:
+      send <match> <words...>
+      send <match> - | --stdin   (read full message from stdin)
+      send <match> --file <path> (read UTF-8 file)
+
+    Trailing CR/LF on stdin/file is stripped so a single ``echo`` newline does not become an extra blank line in chat.
+    """
+    if len(argv) < 4:
+        raise ValueError("missing match name or message source")
+    match_name = argv[2]
+    first = argv[3]
+    if first in ("-", "--stdin"):
+        text = sys.stdin.read().rstrip("\r\n")
+        return match_name, text
+    if first == "--file":
+        if len(argv) < 5:
+            raise ValueError("--file requires a path argument")
+        path = Path(argv[4]).expanduser()
+        text = path.read_text(encoding="utf-8").rstrip("\r\n")
+        return match_name, text
+    return match_name, " ".join(argv[3:])
+
+
 if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 2:
-        print("Usage: python bumble_client.py ensure | content | auth <phone> | sms_code <code> | matches | likes | messages <name> | profile <name> | photos <name> <directory> | send <name> <message> | unmatch <name> | debug | state | tap <text> | snapshot")
+        print(
+            "Usage: python bumble_client.py ensure | content | auth <phone> | sms_code <code> | matches | likes | "
+            "messages <name> | profile <name> | photos <name> <directory> | send <name> <message|-|--stdin|--file path> | "
+            "unmatch <name> | debug | state | tap <text> | snapshot"
+        )
         sys.exit(1)
 
     cmd = sys.argv[1].lower()
@@ -2876,10 +2905,17 @@ if __name__ == "__main__":
         sys.exit(0 if ok else 1)
 
     if cmd == "send":
-        if len(sys.argv) < 4:
+        try:
+            match_for_send, message_payload = read_send_message_argv(sys.argv)
+        except ValueError as exc:
             print("Usage: python bumble_client.py send <match-name> <message>")
+            print("       python bumble_client.py send <match-name> -")
+            print("            Read the message from stdin (use for URLs and multi-line text; avoids shell $'…' quoting bugs).")
+            print("       python bumble_client.py send <match-name> --stdin   # same as -")
+            print("       python bumble_client.py send <match-name> --file <path>")
+            print("Error:", exc, file=sys.stderr)
             sys.exit(1)
-        ok = send_message(sys.argv[2], " ".join(sys.argv[3:]))
+        ok = send_message(match_for_send, message_payload)
         sys.exit(0 if ok else 1)
 
     if cmd == "unmatch":

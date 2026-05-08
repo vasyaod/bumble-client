@@ -51,6 +51,9 @@ python scripts/bumble_client.py matches  # JSON: matches[{name, source, expired,
 python scripts/bumble_client.py likes    # JSON: visible likes plus Beeline count/premium signal when available
 python scripts/bumble_client.py messages "Kritika"  # returns JSON with author field
 python scripts/bumble_client.py send "Kritika" "message text"
+# For URLs or newlines, avoid shell ANSI-C quoting ($'…'); use stdin or a file:
+printf '%s\n' '3pm Saturday works? https://example.com/map' | python scripts/bumble_client.py send "Kritika" -
+python scripts/bumble_client.py send "Kritika" --file /path/to/message.txt
 python scripts/bumble_client.py unmatch "Kritika"
 python scripts/bumble_client.py photos "Kritika" "/absolute/output/dir"
 ```
@@ -111,6 +114,9 @@ python scripts/bumble_client.py messages "Kritika"
 
 ```bash
 python scripts/bumble_client.py send "Kritika" "message text"
+# For URLs or newlines, avoid shell ANSI-C quoting ($'…'); use stdin or a file:
+printf '%s\n' '3pm Saturday works? https://example.com/map' | python scripts/bumble_client.py send "Kritika" -
+python scripts/bumble_client.py send "Kritika" --file /path/to/message.txt
 ```
 
 - Opens the requested match.

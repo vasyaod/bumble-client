@@ -75,6 +75,13 @@ Send a message:
 python3 skills/bumble/scripts/bumble_client.py send "Kritika" "Hello there"
 ```
 
+For URLs or multi-line text, **do not** use bash `$'…'` ANSI-C quoting (it can inject stray `$` or literal `\n` into the bubble). Pipe the body on stdin or use a file:
+
+```bash
+printf '%s\n' '3pm Saturday works? https://example.com/map' | python3 skills/bumble/scripts/bumble_client.py send "Kritika" -
+python3 skills/bumble/scripts/bumble_client.py send "Kritika" --file ./message.txt
+```
+
 Fetch a profile:
 
 ```bash
